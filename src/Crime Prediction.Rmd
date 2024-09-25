@@ -1,0 +1,310 @@
+---
+title: "Crime Prediction through Data Analysis and Statistical Learning "
+output:
+  html_document:
+    df_print: paged
+date: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(caret)
+library(Metrics)
+library(rpart)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(class)
+```
+
+```{r cars}
+data <- read.csv("crime_dataset_sdm.csv")
+```
+
+```{r}
+#colnames(data)
+str(data)
+dim(data)
+```
+
+```{r}
+summary(data)
+sapply(data, class)
+```
+
+```{r}
+colSums(is.na(data))
+```
+```{r}
+sapply(data, function(x) length(unique(x)))
+```
+
+From the above summary, we can see that most of the column values of Crm.Cd.2,Crm.Cd.3,Crm.Cd.4,Weapon.Used.Cd are null, Hence dropping those columns/features.
+
+```{r}
+# Removing Unnecessary Columns
+data <- data %>% select(-c(Crm.Cd.2, Crm.Cd.3, Crm.Cd.4,Weapon.Used.Cd))
+dim(data)
+#head(data)
+```
+
+```{r}
+sum(duplicated(data))
+data<-data[!duplicated(data),]
+dim(data)
+#print(head(data,5))
+```
+
+```{r}
+#FINDING NUMERIC COLUMNS
+cols <- sapply(data, is.numeric)
+numeric_cols <- names(cols)[cols]
+print(numeric_cols)
+```
+
+```{r}
+
+# Data Type Conversion
+data$Date.Rptd <- as.Date(data$Date.Rptd, format = "%m/%d/%Y")
+data$DATE.OCC <- as.Date(data$DATE.OCC, format = "%m/%d/%Y")
+
+#print(head(data,5))
+#dim(data)
+```
+
+Handling other missing value columns
+
+```{r}
+cols_to_process <- c("Premis.Cd", "Crm.Cd.1")
+
+# Replace empty or NaN values with the mean of respective columns
+for (col in cols_to_process) {
+  data[[col]] <- ifelse(is.na(data[[col]]) | data[[col]] == "", mean(data[[col]], na.rm = TRUE), data[[col]])
+}
+colSums(is.na(data))
+```
+Feature Engineering:
+```{r}
+#Top weapons used in crime
+data <- data %>%
+  mutate(Weapon.Desc = ifelse(Weapon.Desc == "", "NO WEAPON", Weapon.Desc))
+weapon_counts <- table(data$Weapon.Desc)
+sorted_weapon_counts <- sort(weapon_counts, decreasing = TRUE)
+top_5_weapons <- names(head(sorted_weapon_counts, 10))
+#unique(data$Weapon.Desc)
+top_5_weapons
+```
+
+```{r}
+Premis_counts <- table(data$Premis.Desc)
+sorted_Premis_counts <- sort(Premis_counts, decreasing = TRUE)
+top_5_Premis <- names(head(sorted_Premis_counts, 15))
+#data <- data[data$Premis.Desc %in% top_5_Premis, ]
+dim(data)
+```
+
+```{r}
+category_mapping <- list(
+  "Violent Crime" = c("RAPE, FORCIBLE", "ASSAULT WITH DEADLY WEAPON, AGGRAVATED ASSAULT", "ROBBERY", "BATTERY - SIMPLE ASSAULT", "CRIMINAL HOMICIDE", "RAPE, ATTEMPTED", "KIDNAPPING", "KIDNAPPING - GRAND ATTEMPT", "MANSLAUGHTER, NEGLIGENT"),
+  "Property Crime" = c("THEFT-GRAND ($950.01 & OVER)EXCPT,GUNS,FOWL,LIVESTK,PROD", "BURGLARY", "BURGLARY FROM VEHICLE", "BURGLARY, ATTEMPTED", "VEHICLE - STOLEN", "VANDALISM - FELONY ($400 & OVER, ALL CHURCH VANDALISMS)", "THEFT FROM MOTOR VEHICLE - GRAND ($950.01 AND OVER)", "THEFT FROM MOTOR VEHICLE - PETTY ($950 & UNDER)", "THEFT FROM MOTOR VEHICLE - ATTEMPT", "BURGLARY FROM VEHICLE, ATTEMPTED", "TILL TAP - GRAND THEFT ($950.01 & OVER)", "AUTO REPAIR", "VEHICLE, STOLEN - OTHER (MOTORIZED SCOOTERS, BIKES, ETC)"),
+  "Non-Violent Crime" = c("VANDALISM - MISDEMEANOR ($399 OR UNDER)", "SHOPLIFTING - PETTY THEFT ($950 & UNDER)", "SHOPLIFTING-GRAND THEFT ($950.01 & OVER)", "SHOPLIFTING - ATTEMPT", "THEFT PLAIN - PETTY ($950 & UNDER)", "THEFT FROM PERSON", "THEFT FROM PERSON - ATTEMPT", "SHOTS FIRED AT INHABITED DWELLING", "SHOTS FIRED AT MOVING VEHICLE", "DISCHARGE FIREARMS/SHOTS FIRED", "THEFT PLAIN - ATTEMPT", "CHILD STEALING", "DOCUMENT FORGERY / STOLEN FELONY", "EMBEZZLEMENT, GRAND THEFT ($950.01 & OVER)", "EMBEZZLEMENT, PETTY THEFT ($950 & UNDER)", "RECKLESS DRIVING", "THEFT, COIN MACHINE - PETTY ($950 & UNDER)", "THEFT, COIN MACHINE - ATTEMPT", "TILL TAP - PETTY ($950 & UNDER)", "PICKPOCKET", "PICKPOCKET, ATTEMPT", "PIMPING", "PANDERING", "CONSPIRACY", "CONTRIBUTING", "BOMB SCARE", "FALSE POLICE REPORT", "FAILURE TO YIELD", "DISTURBING THE PEACE", "DRIVING WITHOUT OWNER CONSENT (DWOC)", "DISRUPT SCHOOL", "CRUELTY TO ANIMALS", "ILLEGAL DUMPING", "LYNCHING - ATTEMPTED", "LYNCHING", "DRUNK ROLL", "BRIBERY", "INDECENT EXPOSURE", "DISHONEST EMPLOYEE - PETTY THEFT", "DISHONEST EMPLOYEE - GRAND THEFT", "DISHONEST EMPLOYEE ATTEMPTED THEFT", "DOCUMENT WORTHLESS ($200.01 & OVER)", "DOCUMENT WORTHLESS ($200 & UNDER)", "FALSE IMPRISONMENT", "FIREARMS RESTRAINING ORDER (FIREARMS RO)", "FIREARMS EMERGENCY PROTECTIVE ORDER (FIREARMS EPO)", "CONTEMPT OF COURT", "WEAPONS POSSESSION/BOMBING"),
+  "Sexual Crime" = c("SEX OFFENDER REGISTRANT OUT OF COMPLIANCE", "LEWD CONDUCT", "CHILD PORNOGRAPHY", "LEWD/LASCIVIOUS ACTS WITH CHILD", "LEWD CONDUCT", "ORAL COPULATION", "SEX, UNLAWFUL (INC MUTUAL CONSENT, PENETRATION W/ FRGN OBJ)", "SODOMY/SEXUAL CONTACT B/W PENIS OF ONE PERS TO ANUS OTH"),
+  "Fraud" = c("EXTORTION", "CREDIT CARDS, FRAUD USE ($950 & UNDER)", "CREDIT CARDS, FRAUD USE ($950.01 & OVER)", "EMBEZZLEMENT, PETTY THEFT ($950 & UNDER)", "EMBEZZLEMENT, GRAND THEFT ($950.01 & OVER)", "REPLICA FIREARMS (SALE, DISPLAY, MANUFACTURE OR DISTRIBUTE)", "BIGAMY", "COUNTERFEIT", "CRIMINAL HOMICIDE", "DISHONEST EMPLOYEE - PETTY THEFT", "DRUGS, TO A MINOR", "FORGERY, COUNTERFEITING", "FAILURE TO YIELD", "DOCUMENT WORTHLESS ($200.01 & OVER)", "DRIVING WITHOUT OWNER CONSENT (DWOC)", "FALSE POLICE REPORT", "FAILURE TO YIELD", "FIREARMS EMERGENCY PROTECTIVE ORDER (FIREARMS EPO)", "CHILD ABUSE (PHYSICAL) - AGGRAVATED ASSAULT", "FALSE IMPRISONMENT", "CHILD NEGLECT (SEE 300 W.I.C.)", "HUMAN TRAFFICKING - COMMERCIAL SEX ACTS", "DRUNK ROLL", "HUMAN TRAFFICKING - INVOLUNTARY SERVITUDE", "CHILD ANNOYING (17YRS & UNDER)", "CHILD ABANDONMENT"),
+  "Other" = c("BIKE - STOLEN", "CRIMINAL THREATS - NO WEAPON DISPLAYED", "ARSON", "CHILD ABUSE (PHYSICAL) - SIMPLE ASSAULT", "DUI", "DOCUMENT FORGERY / STOLEN FELONY", "DOCUMENT WORTHLESS ($200.01 & OVER)", "DOCUMENT WORTHLESS ($200 & UNDER)", "DRIVING WITHOUT OWNER CONSENT (DWOC)", "DUI - FELONY", "DUI - MISDEMEANOR", "FALSE POLICE REPORT", "FIREARMS RESTRAINING ORDER (FIREARMS RO)", "CRIMINAL THREATS - NO WEAPON DISPLAYED", "HUMAN TRAFFICKING - COMMERCIAL SEX ACTS", "HUMAN TRAFFICKING - INVOLUNTARY SERVITUDE", "RECKLESS DRIVING", "CONTEMPT OF COURT", "DUI - FELONY", "DRUG PARAPHERNALIA", "DOCUMENT FORGERY / STOLEN FELONY")
+)
+
+data <- data %>%
+  mutate(crime_category = case_when(
+    Crm.Cd.Desc %in% category_mapping$`Violent Crime` ~ "Violent Crime",
+    Crm.Cd.Desc %in% category_mapping$`Property Crime` ~ "Property Crime",
+    Crm.Cd.Desc %in% category_mapping$`Non-Violent Crime` ~ "Non-Violent Crime",
+    Crm.Cd.Desc %in% category_mapping$`Sexual Crime` ~ "Sexual Crime",
+    Crm.Cd.Desc %in% category_mapping$`Fraud` ~ "Fraud",
+    Crm.Cd.Desc %in% category_mapping$Other ~ "Other",
+    TRUE ~ "Other"
+  ))
+
+table(data$crime_category)
+```
+
+Exploratory Data Analysis:
+```{r}
+library(scales) 
+crime_counts <- data %>%
+  group_by(crime_category) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = (count / sum(count)) * 100)
+
+ggplot(crime_counts, aes(x = 2, y = percentage, fill = crime_category)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), 
+            position = position_stack(vjust = 0.5), size = 5, color = "black") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Percentage Distribution of Crime Categories",
+       fill = "Crime Category") +
+  theme_void() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+  xlim(0.5, 2.5)  
+```
+```{r}
+
+library(ggplot2)
+
+ggplot(data, aes(x = crime_category, fill = Status.Desc)) +
+  geom_bar() +
+  labs(x = "Crime Category", y = "Count", title = "Distribution of Status by Crime Category")
+
+```
+```{r}
+
+heatmap_data <- table(data$crime_category, data$AREA.NAME)
+
+heatmap_df <- as.data.frame(heatmap_data)
+
+ggplot(heatmap_df, aes(x = Var1, y = Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "purple", high = "white") + 
+  labs(x = "Crime Category", y = "Area Name", title = "Heatmap of Crime Category vs. Area Name") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+```{r}
+library(tidyr)
+data$DATE.OCC <- as.Date(data$DATE.OCC)
+data <- data %>%
+  mutate(Month = format(DATE.OCC, "%B"))
+
+crime_counts <- data %>%
+  count(Month, crime_category)
+
+# Get top 5 crime categories based on total count
+top_5_crime_categories <- crime_counts %>%
+  group_by(crime_category) %>%
+  summarise(total_count = sum(n)) %>%
+  top_n(5, total_count) %>%
+  pull(crime_category)
+
+top_5_crimes_data <- crime_counts %>%
+  filter(crime_category %in% top_5_crime_categories)
+
+all_months <- expand_grid(Month = month.name,
+                          crime_category = top_5_crime_categories)
+
+top_5_crimes_data <- all_months %>%
+  left_join(top_5_crimes_data, by = c("Month", "crime_category")) %>%
+  replace_na(list(n = 0))
+
+ggplot(top_5_crimes_data, aes(x = Month, y = n, color = crime_category, group = crime_category)) +
+  geom_line(size = 1) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Top 5 Monthly Crime Trends",
+       x = "Month",
+       y = "Number of Crimes",
+       color = "Crime Category") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+```
+
+```{r}
+data$case_solved <- ifelse(data$Status.Desc == 'Invest Cont', 'Not solved', 'Solved')
+
+head(data$case_solved)
+
+data$Date.Rptd <- as.Date(data$Date.Rptd)
+data$DATE.OCC <- as.Date(data$DATE.OCC)
+
+data$reported_delay <- as.numeric(difftime(data$Date.Rptd, data$DATE.OCC, units = "days"))
+data$reported_delay <- ifelse(data$reported_delay >= 0, data$reported_delay, 0)
+```
+
+```{r}
+data$case_solved <- as.factor(data$case_solved)
+categorical_features <- c('Vict.Sex', 'Vict.Descent', 'Crm.Cd.1')
+data[categorical_features] <- lapply(data[categorical_features], as.factor)
+
+features <- c('AREA', 'Crm.Cd.1', 'Vict.Sex', 'Vict.Descent', 'hour', 'reported_delay')
+
+label_encoders <- list()
+
+features <- c('Vict.Sex', 'Vict.Descent', 'Crm.Cd.1')
+
+for (feature in features) {
+  if (feature %in% names(data)) {
+    if (any(is.na(data[[feature]]))) {
+      print(paste("Column", feature, "contains missing values and cannot be converted."))
+    } else {
+      data[[feature]] <- as.integer(data[[feature]])
+      print(paste("Column", feature, "successfully converted to factor."))
+    }
+  } else {
+    print(paste("Column", feature, "does not exist in the dataframe."))
+  }
+}
+```
+
+
+
+```{r}
+target <- 'case_solved'
+library(caret)
+
+X <- data[, features]  # Features
+y <- data[, target]    # Target
+
+set.seed(42)
+
+train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[train_indices, ]
+X_test <- X[-train_indices, ]
+y_train <- y[train_indices]
+y_test <- y[-train_indices]
+
+X_train_scaled <- scale(X_train)
+X_test_scaled <- scale(X_test)
+```
+
+```{r}
+
+# the random forest classifier
+rf_clf <- randomForest(x = X_train, y = y_train)
+
+print(rf_clf)
+rf_clf_pred <- predict(rf_clf, newdata = X_test)
+accuracy <- sum(rf_clf_pred == y_test) / length(y_test) * 100
+print(paste("random forest Classifier Accuracy:", round(accuracy, 2), "%"))
+
+conf_matrix <- confusionMatrix(rf_clf_pred, y_test)
+```
+
+```{r}
+
+# the decision tree classifier
+tree_clf <- rpart(formula = y_train ~ ., data = X_train)
+tree_clf_pred <- predict(tree_clf, newdata = X_test, type = "class")
+accuracy <- sum(tree_clf_pred == y_test) / length(y_test) * 100
+
+print(paste("Decision Tree Classifier Accuracy:", round(accuracy, 2), "%"))
+conf_matrix <- confusionMatrix(tree_clf_pred, y_test)
+
+conf_matrix
+```
+
+```{r}
+# logistic regression model
+log_reg_model <- train(X_train, y_train, method = "glm", family = binomial)
+print(log_reg_model)
+
+log_reg_pred <- predict(log_reg_model, newdata = X_test)
+conf_matrix <- confusionMatrix(log_reg_pred, y_test)
+print(paste("Logistic Regression Accuracy:", conf_matrix$overall['Accuracy']))
+```
